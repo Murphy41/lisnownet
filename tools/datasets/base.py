@@ -47,8 +47,9 @@ class Base(Dataset):
         # a dirty fix for WADS :(
         # at the time of publishing this work, there are many accumulated snow points being
         # labeled as active (i.e. in the air, id = 110)
-        idx_mislabeled = (points[:, 3] > 1 / 255) & (labels == 110)
-        labels[idx_mislabeled] = 255
+        # Comment out as it may influence the Livox Dataset
+        # idx_mislabeled = (points[:, 3] > 1 / 255) & (labels == 110)
+        # labels[idx_mislabeled] = 255
 
         if self.training:
             # random drop
@@ -102,7 +103,10 @@ class Base(Dataset):
         idx_valid &= (i1 >= 0) & (i1 < self.width)
         i0, i1 = i0[idx_valid], i1[idx_valid]
 
-        range_img = np.full([2, self.num_beams, self.width], -1, dtype=points.dtype)
+        # The data is trimed at this point, only the closer datapoint in a bin will be kept.
+        # The timing is unfair in this case, and the comparison is meaningless as the benchmark is changed.
+        range_img = np.full([2, self.num_beams, self.width], -1, dtype=points.dtype) 
+
         range_img[0, i0, i1] = self.shrink(depth[idx_valid])
         range_img[1, i0, i1] = self.shrink(points[idx_valid, -1])
 
