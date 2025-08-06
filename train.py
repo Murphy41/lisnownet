@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tools import losses
 from tools.datasets.wads import WADS
 from tools.datasets.cadc import CADC
+from tools.datasets.livoxMid70 import LivoxMid70
 from tools.models import LiSnowNet
 
 parser = argparse.ArgumentParser()
@@ -31,9 +32,11 @@ parser.add_argument('--lr_decay', type=float, default=0.95,
 parser.add_argument('--alpha', type=float, default=5.0)
 parser.add_argument('--beta', type=float, default=0.5,
                     help='Relative weight of the FFT loss. Must be between 0 and 1.')
-parser.add_argument('--dataset', type=str, default='cadc', choices=['cadc', 'wads'])
+parser.add_argument('--dataset', type=str, default='cadc', choices=['cadc', 'wads', 'livox'])
 parser.add_argument('--log_dir', type=str, default='./logs')
 parser.add_argument('--tag', type=str, default='')
+parser.add_argument('--split_mode', type=str, default='mix',
+                    help="Split mode for LivoxMid70: 'hp', 'h', 'p', or 'mix'")
 config = vars(parser.parse_args())
 
 device = torch.device('cuda')
@@ -71,6 +74,10 @@ if config['dataset'] == 'cadc':
 elif config['dataset'] == 'wads':
     ds_train = WADS('./data/wads', training=True)
     ds_val = WADS('./data/wads', training=False)
+elif config['dataset'] == 'livox':
+    ds_train = LivoxMid70('./data/livox', training=True, split_mode=config['split_mode'])
+    ds_val   = LivoxMid70('./data/livox', training=False, split_mode=config['split_mode'])
+    print(f">>> Loaded LivoxMid70 dataset with split_mode='{config['split_mode']}'")
 
 loader_train = DataLoader(
     ds_train,
