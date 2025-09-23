@@ -17,19 +17,39 @@ class Fill2d(nn.Module):
         y = self.maxpool(x)
         y[idx_valid] = x[idx_valid]
 
-        idx_y = utils.get_valid_indices(y)
+         # same shape as y, boolean
+        idx_y = utils.get_valid_indices(y) 
 
-        mu = (y * idx_y).sum(dim=3) / idx_y.sum(dim=3)
-        mu = mu.reshape(n, c, h, 1).tile(1, 1, 1, w)
-        sigma2 = ((y - mu).pow(2) * idx_y).sum(dim=3) / idx_y.sum(dim=3)
-        sigma2 = sigma2.reshape(n, c, h, 1).tile(1, 1, 1, w)
-        y[~idx_y] = (mu + sigma2.sqrt())[~idx_y]
+        # Safe per-row counts (N,C,H,1)
+        counts = idx_y.sum(dim=3, keepdim=True).to(dtype=y.dtype)
+        counts_safe = counts.clamp_min(1)
 
+        # Safe mean/var per row
+        mu = (y * idx_y).sum(dim=3, keepdim=True) / counts_safe
+        var = ((y - mu).pow(2) * idx_y).sum(dim=3, keepdim=True) / counts_safe
+        std = var.sqrt()
+
+        # Broadcast to (N,C,H,W)
+        mu = mu.expand(n, c, h, w)
+        std = std.expand(n, c, h, w)
+
+        # Fill invalid with mu + std; if a row had 0 valid pixels, counts==0 → fallback to 0
+        fallback = torch.zeros_like(y)
+        fill_value = torch.where(counts.expand_as(y) > 0, mu + std, fallback)
+
+        y = torch.where(idx_y, y, fill_value)
+
+        # Laplacian refine
         dy = utils.laplacian(y).relu()
         y = self.avgpool(y + dy)
+
+        # Restore original valid pixels
         y[idx_valid] = x[idx_valid]
 
+        # Final sanitization
+        y = torch.nan_to_num(y, nan=0.0, posinf=1e6, neginf=-1e6)
         return y
+
 
 
 class CircAvgPool2d(nn.Module):
@@ -190,7 +210,11 @@ class LiSnowNet(nn.Module):
         # x.shape: (N, 2, H, W)
 
         idx_valid = utils.get_valid_indices(x)
+        # if torch.isnan(x).any():
+        #     print("⚠️ Warning: Input x contains NaNs BEFORE fill().")
         x = self.fill(x, idx_valid)
+        # if torch.isnan(x).any():
+        #     print("❌ NaNs detected AFTER fill(). Investigate fill logic.")
 
         x0 = torch.cat([
             x,

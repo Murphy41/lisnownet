@@ -5,6 +5,7 @@ from . import utils
 
 
 def sparsity_loss(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    # print("sparsity_loss input:", x.shape, x.dtype, x.min().item(), x.max().item())
     x = x - x.mean(dim=-1, keepdim=True)
     x = utils.flip_cat(x)
 
@@ -17,6 +18,8 @@ def dwt_loss(x: torch.Tensor, levels: Union[None, int] = None) -> torch.Tensor:
     if levels is None:
         levels = (np.log2(h) - 2).astype(np.uint8)
 
+    # div = 2 ** levels
+    # print(f"DWT loss input shape: {x.shape}, using levels={levels}, div={div}")
     assert (h % 2**levels == 0) & (w % 2**levels == 0)
 
     loss = torch.tensor(0, dtype=x.dtype, device=x.device)
