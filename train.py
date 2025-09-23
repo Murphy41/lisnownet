@@ -75,6 +75,7 @@ elif config['dataset'] == 'wads':
     ds_train = WADS('./data/wads', training=True)
     ds_val = WADS('./data/wads', training=False)
 elif config['dataset'] == 'livox':
+    config['split_mode'] = config['split_mode'].lower()
     ds_train = LivoxMid70('./data/livox', training=True, split_mode=config['split_mode'])
     ds_val   = LivoxMid70('./data/livox', training=False, split_mode=config['split_mode'])
     print(f">>> Loaded LivoxMid70 dataset with split_mode='{config['split_mode']}'")
