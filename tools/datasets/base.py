@@ -10,7 +10,8 @@ INC = np.deg2rad(np.linspace(-24, 3, 64))
 
 
 class Base(Dataset):
-    def __init__(self, data_dir, name='Base', inc=INC, width=WIDTH, training=True, skip=1, return_points=False, filter=''):
+    def __init__(self, data_dir, name='Base', inc=INC, width=WIDTH,
+                 training=True, skip=1, return_points=False, filter=''):
         super().__init__()
 
         self.name = name
@@ -34,7 +35,7 @@ class Base(Dataset):
         assert len(self.fn_points) > 0
 
         self.rng = np.random.default_rng()
-        self.shrink = np.cbrt
+        self.shrink = np.cbrt  # cube-root compression used elsewhere
 
     def __len__(self):
         return len(self.fn_points)
@@ -66,6 +67,33 @@ class Base(Dataset):
         else:
             return [fid] + list(self.points2image(points, labels))
 
+    def project_points(self, points):
+        """
+        Map raw points to raster bins.
+
+        Args:
+            points: (N,4) array [x,y,z,i]
+
+        Returns:
+            i0: (N,) row indices (0..num_beams-1)
+            i1: (N,) col indices (0..width-1)
+            valid: (N,) boolean mask of points that fall inside the raster
+        """
+        depth = np.linalg.norm(points[:, :3], axis=-1)
+        depth_safe = np.maximum(depth, 1e-9)
+        inclination = np.arcsin(points[:, 2] / depth_safe)     # [-pi/2, pi/2]
+        azimuth     = np.arctan2(points[:, 1], points[:, 0])   # [-pi, pi]
+
+        ring = self.inc2ring(inclination).round().astype(np.int32)
+        i0 = (self.num_beams - 1) - ring
+
+        # azimuth -> [0,width)
+        i1 = (1 - 0.5 * (azimuth / np.pi + 1)) * self.width
+        i1 = np.floor(i1).astype(np.int32)
+
+        valid = (i0 >= 0) & (i0 < self.num_beams) & (i1 >= 0) & (i1 < self.width)
+        return i0, i1, valid
+
     def points2image(self, points, labels, interleave=True):
         '''
         Input
@@ -77,7 +105,6 @@ class Base(Dataset):
             - xyz_img:      (3, num_beams, width)   points.dtype
             - lbl_img:      (1, num_beams, width)   labels.dtype
         '''
-
         depth = np.linalg.norm(points[:, :3], axis=-1)
         if self.training:
             order = np.arange(depth.size, dtype=np.int32)
@@ -91,22 +118,22 @@ class Base(Dataset):
         points, labels = points[order, :], labels[order]
         depth = depth[order]
 
-        inclination = np.arcsin(points[:, 2] / depth)
+        # use the same safe math as in project_points()
+        depth_safe = np.maximum(depth, 1e-9)
+        inclination = np.arcsin(points[:, 2] / depth_safe)
         azimuth = np.arctan2(points[:, 1], points[:, 0])
 
         ring = self.inc2ring(inclination).round().astype(np.int32)
         i0 = (self.num_beams - 1) - ring
-        i1 = 1 - 0.5 * (azimuth / np.pi + 1)
-        i1 = np.floor(i1 * self.width).astype(np.int32)
+        i1 = (1 - 0.5 * (azimuth / np.pi + 1)) * self.width
+        i1 = np.floor(i1).astype(np.int32)
 
         idx_valid = (i0 >= 0) & (i0 < self.num_beams)
         idx_valid &= (i1 >= 0) & (i1 < self.width)
         i0, i1 = i0[idx_valid], i1[idx_valid]
 
-        # The data is trimed at this point, only the closer datapoint in a bin will be kept.
-        # The timing is unfair in this case, and the comparison is meaningless as the benchmark is changed.
-        range_img = np.full([2, self.num_beams, self.width], -1, dtype=points.dtype) 
-
+        # allocate and fill images
+        range_img = np.full([2, self.num_beams, self.width], -1, dtype=points.dtype)
         range_img[0, i0, i1] = self.shrink(depth[idx_valid])
         range_img[1, i0, i1] = self.shrink(points[idx_valid, -1])
 
@@ -118,6 +145,8 @@ class Base(Dataset):
         lbl_img[i0, i1] = labels[idx_valid]
         lbl_img = np.expand_dims(lbl_img, 0)
 
+        # print(range_img)
+
         return range_img, xyz_img, lbl_img
 
     @staticmethod
@@ -128,7 +157,6 @@ class Base(Dataset):
     def read_files(file_name):
         points = np.fromfile(file_name, dtype=np.float32).reshape(-1, 4)
         labels = np.full(points.shape[0], -1, dtype=np.int32)
-
         return points, labels
 
     def read_file_list(self, data_dir):
@@ -136,5 +164,4 @@ class Base(Dataset):
             p = os.path.join(data_dir, 'training/velodyne/*.bin')
         else:
             p = os.path.join(data_dir, 'testing/velodyne/*.bin')
-
         return sorted(glob(p))
