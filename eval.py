@@ -133,7 +133,6 @@ if __name__ == '__main__':
     parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--tag', type=str, default='')
     parser.add_argument('--dataset', type=str, default='livox', choices=['cadc', 'wads', 'livox'])
-    parser.add_argument('--split_mode', type=str, default='mix', help="Livox split: 'hp', 'h', 'p', or 'mix'")
     parser.add_argument('--save_bev', action='store_true',
                     help='Also save BEV PNGs. Off by default.')
     config = parser.parse_args()
@@ -170,14 +169,30 @@ if __name__ == '__main__':
 
     device = torch.device('cuda')
 
-    d_thresh, i_thresh = 2.5, 2 / 255
-
     if config.dataset == 'cadc':
         dataset = CADC(data_dir='./data/cadcd', training=False, skip=1)
     elif config.dataset == 'wads':
         dataset = WADS(data_dir='./data/wads', training=False, skip=1)
     elif config.dataset == 'livox':
-        dataset = LivoxMid70(data_dir='./data/livox', training=False, split_mode=config.split_mode.lower(), skip=1)
+        dataset = LivoxMid70(data_dir='./data/livox', training=False, skip=1)
+
+    # dataset-specific thresholds
+    if config.dataset == 'cadc':
+        base_thresh = config.threshold                # keep CLI
+        z_ground = config.z_ground
+        i_thresh = 2 / 255
+        d_thresh = 2.5
+    elif config.dataset == 'wads':
+        base_thresh = config.threshold                # 1.2e-2 from original paper/code
+        z_ground = config.z_ground
+        i_thresh = 2 / 255
+        d_thresh = 2.5
+    elif config.dataset == 'livox':
+        # Livox intensities and ranges differ → use your looser ones
+        base_thresh = 1e-4
+        z_ground = config.z_ground     # keep it for now
+        i_thresh = 2.0                 # your livox edit
+        d_thresh = 0.1                 # your livox edit
 
     loader = DataLoader(
         dataset,
@@ -218,9 +233,9 @@ if __name__ == '__main__':
             range_img = range_img.pow(3)
 
             # predictions
-            pr_img = delta_d * delta_i.pow(3) > config.threshold
+            pr_img = delta_d * delta_i.pow(3) > base_thresh
             # snowflakes are higher than the ground plane
-            pr_img &= xyz_img[:, 2, :, :] > config.z_ground
+            pr_img &= xyz_img[:, 2, :, :] > z_ground
             # snowflakes are very dark
             pr_img &= range_img[:, 1, :, :] < i_thresh
             # points within a small distance are 100% snowflakes
@@ -246,9 +261,17 @@ if __name__ == '__main__':
 
                     arr = np.zeros((pts.shape[0], 8), dtype=np.float32)
                     arr[:, 0:4] = pts
-                    if rd_point is not None: arr[:, 4] = rd_point
-                    if ri_point is not None: arr[:, 5] = ri_point
-                    arr[:, 6] = (gt.astype(bool)).astype(np.float32)
+                    if rd_point is not None:
+                        arr[:, 4] = rd_point
+                    if ri_point is not None:
+                        arr[:, 5] = ri_point
+
+                    if config.dataset == 'wads':
+                        arr[:, 6] = (gt == config.snow_id).astype(np.float32)
+                    else:
+                        # livox (or anything already 0/1)
+                        arr[:, 6] = (gt.astype(bool)).astype(np.float32)
+                    
                     arr[:, 7] = pr_point.astype(np.float32)
                     arr = arr[np.isfinite(arr).all(axis=-1)]
 
