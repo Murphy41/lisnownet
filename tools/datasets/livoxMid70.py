@@ -31,28 +31,31 @@ class LivoxMid70(Base):
         LP = get_files('LP')
         LD = get_files('LD')
 
+        if not self.training:
+            # evaluate on the whole dataset no matter what split_mode is
+            return HP + HD + LP + LD
+
         if self.split_mode == 'hp':
             # train on HP, val on non-HP (HD+LP+LD) — adjust if you intended differently
-            return HP if self.training else HD + LP + LD
+            return HP
 
         elif self.split_mode == 'h':
             # train on H (HP+HD), val on P (LP+LD)
-            return HP + HD if self.training else LP + LD
+            return HP + HD
 
         elif self.split_mode == 'p':
             # train on P (HP+LP), val on D (HD+LD)
-            return HP + LP if self.training else HD + LD
+            return HP + LP
 
         elif self.split_mode == 'mix':
-            # reproducible 80/20 split across all files
+            # reproducible 80/20 split across all files (for training only)
             split_dir = os.path.join(data_dir, 'splits')
             os.makedirs(split_dir, exist_ok=True)
             train_file = os.path.join(split_dir, 'train_mix.txt')
             val_file   = os.path.join(split_dir, 'val_mix.txt')
 
             if os.path.exists(train_file) and os.path.exists(val_file):
-                file_list = train_file if self.training else val_file
-                with open(file_list, 'r') as f:
+                with open(train_file, 'r') as f:
                     return [line.strip() for line in f if line.strip()]
 
             all_files = HP + HD + LP + LD
@@ -67,10 +70,12 @@ class LivoxMid70(Base):
             with open(val_file, 'w') as f:
                 f.writelines(fn + '\n' for fn in val_files)
 
-            return train_files if self.training else val_files
+            return train_files
 
         else:
-            raise ValueError(f"Unknown split_mode '{self.split_mode}'. Choose from ['hp', 'h', 'p', 'mix'].")
+            raise ValueError(
+            f"Unknown split_mode '{self.split_mode}'. Choose from ['hp', 'h', 'p', 'mix']."
+        )
 
     # ---- key override so eval can use dataset.project_points(...) ----
     def project_points(self, points, fov_deg=70.4):
