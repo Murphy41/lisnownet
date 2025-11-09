@@ -3,6 +3,7 @@ data/
 docker/home
 test/
 logs/
+logs_eval/
 
 **/__pycache__/
 **/*.png
