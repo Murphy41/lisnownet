@@ -4,6 +4,7 @@ docker/home
 test/
 logs/
 logs_eval/
+sweep_logs/
 
 **/__pycache__/
 **/*.png
