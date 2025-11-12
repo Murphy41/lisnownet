@@ -2,7 +2,7 @@
 set -e  # stop if any eval fails
 
 # List of all experiment tags
-TAGS=("wads_test" "hp_test" "h_test" "p_test" "mix_test")
+TAGS=("wads_baseline" "livox_hp" "livox_h" "livox_p" "livox_mix")
 
 # Batch size for evaluation
 BATCH=16
