@@ -96,11 +96,38 @@ def read_livox_pcd_labels(pcd_path):
     return np.array(dust, dtype=np.int32)
 
 def read_livox_mix_val_list(livox_root):
+    """
+    Read data/livox/splits/val_mix.txt and normalise lines to 'HD/cloud10'
+    (no leading ./, no 'data/livox/', no .pcd).
+    """
     val_file = os.path.join(livox_root, "splits", "val_mix.txt")
     if not os.path.isfile(val_file):
         return set()
+
+    mix_set = set()
     with open(val_file, "r") as f:
-        return set(os.path.normpath(line.strip()) for line in f if line.strip())
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            # normalise slashes
+            line = line.replace("\\", "/")
+
+            # remove leading './'
+            if line.startswith("./"):
+                line = line[2:]
+
+            # remove leading 'data/livox/'
+            if line.startswith("data/livox/"):
+                line = line[len("data/livox/"):]
+
+            # drop extension (.pcd)
+            line = os.path.splitext(line)[0]
+
+            # now should look like 'HD/cloud10'
+            mix_set.add(os.path.normpath(line))
+    return mix_set
 
 
 # ---------- per-dataset runners ----------
@@ -195,8 +222,12 @@ def run_livox_eval(args, run_dir):
         d["tp"] += tp; d["fp"] += fp; d["fn"] += fn; d["tot"] += tot
 
         # count for mix val
-        if mix_set and os.path.normpath(rel_pcd) in mix_set:
-            tp_mix += tp; fp_mix += fp; fn_mix += fn; tot_mix += tot
+        rel_key = os.path.splitext(os.path.normpath(rel_pcd))[0]
+        if mix_set and rel_key in mix_set:
+            tp_mix += tp
+            fp_mix += fp
+            fn_mix += fn
+            tot_mix += tot
 
         if (i % 200 == 0) or (i == len(pred_entries)):
             m = metrics_from_counts(tp_all, fp_all, fn_all, tot_all)
