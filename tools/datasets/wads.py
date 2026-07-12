@@ -33,6 +33,13 @@ class WADS(Base):
         file_name = file_name.replace('velodyne', 'labels').replace('.bin', '.label')
         labels = np.fromfile(file_name, dtype=np.int32)[idx_unique]
 
+        # temporary dirty fix (match Base.read_files behavior):
+        # some airborne points were labeled as active (110). If the
+        # intensity is > 1/255 we treat them as mislabeled and set to 255
+        idx_mislabeled = (points[:, -1] > 1 / 255) & (labels == 110)
+        if idx_mislabeled.any():
+            labels[idx_mislabeled] = 255
+
         return points, labels
 
     def read_file_list(self, data_dir):

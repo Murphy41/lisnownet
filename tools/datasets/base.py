@@ -49,8 +49,8 @@ class Base(Dataset):
         # at the time of publishing this work, there are many accumulated snow points being
         # labeled as active (i.e. in the air, id = 110)
         # Comment out as it may influence the Livox Dataset
-        # idx_mislabeled = (points[:, 3] > 1 / 255) & (labels == 110)
-        # labels[idx_mislabeled] = 255
+        idx_mislabeled = (points[:, 3] > 1 / 255) & (labels == 110)
+        labels[idx_mislabeled] = 255
 
         if self.training:
             # random drop

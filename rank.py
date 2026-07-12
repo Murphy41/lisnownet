@@ -3,7 +3,7 @@
 Model Ranking Utility for LiSnowNet Experiments
 ===============================================================================
 
-Author: Guang Hu (Murphy)
+Author: Murphy
 Last Updated: 2025-11-12
 Repository: https://github.com/Murphy41/lisnownet
 

@@ -1,4 +1,3 @@
-# plot_results.py
 import os
 import re
 import matplotlib.pyplot as plt
@@ -7,45 +6,57 @@ import numpy as np
 # --------------------------------------------------
 # 1) config
 # --------------------------------------------------
-LOG_ROOT = "./logs"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+LOG_ROOT = os.path.join(ROOT_DIR, "logs")
 
-# put your 5 runs here
-TAGS = [
-    "wads_baseline",
-    "livox_hp",
-    "livox_h",
-    "livox_p",
-    "livox_mix",
+# Requested models:
+# - lisnownet on hp
+# - lisnownet on wads
+# - alior on hp
+# - lior on hp
+MODELS = [
+    {
+        "name": "lisnownet_hp",
+        "tag": "lisnownet_livox_hp_a2_b0.5_lr0.001_dec0.98_e30",
+    },
+    {
+        "name": "lisnownet_wads",
+        "tag": "lisnownet_wads_alpha=5.5",
+    },
+    {
+        "name": "alior_hp",
+        "tag": "20260203_085525__livox_vx0.2_r0.1_v10.0005_v20.0001_b256_phi1.2_k500",
+    },
+    {
+        "name": "lior_hp",
+        "tag": "lior_best_hp_thr0.01_dirlt_full",
+    },
 ]
 
-
-# the 9 test groups we want to show (order matters for plotting)
+# Requested test groups: HP, H, P, Mix, WADS
+# Here we map:
+# - H -> HD+LD
+# - P -> LP+LD
 TEST_GROUPS = [
-    "wads",
-    "livox",
-    "HP",
-    "HD",
-    "LP",
-    "LD",
-    "LP+LD",
-    "HD+LD",
-    "mix_val",
+    ("HP", "HP"),
+    ("H", "HD+LD"),
+    ("P", "LP+LD"),
+    ("Mix", "mix_val"),
+    ("WADS", "WADS overall"),
 ]
 
+OUT_PNG = os.path.join(LOG_ROOT, "compare_hp_h_p_mix_wads_f1.png")
+OUT_CSV = os.path.join(LOG_ROOT, "compare_hp_h_p_mix_wads_f1.csv")
+
+
 # --------------------------------------------------
-# 2) tiny parser for the results_*.txt you wrote in benchmark.py
+# 2) parser
 # --------------------------------------------------
-number_re = re.compile(r"([-+]?[0-9]*\.?[0-9]+)")
+number_re = re.compile(r"([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)")
+
 
 def read_metrics_from_file(path):
-    """
-    returns {section_name: {metric: value, ...}, ...}
-    e.g. {
-        'Livox overall': {'precision': 0.9, ...},
-        'HP': {...},
-        ...
-    }
-    """
     if not os.path.isfile(path):
         return {}
 
@@ -58,123 +69,98 @@ def read_metrics_from_file(path):
                 continue
 
             if line.startswith("===") and line.endswith("==="):
-                # section header: "=== Livox overall ==="
-                name = line.strip("=").strip()
-                current = name
+                current = line.strip("=").strip()
                 sections[current] = {}
-            else:
-                # metric line: "precision: 0.1234"
-                if current is None:
-                    continue
-                if ":" not in line:
-                    continue
-                k, v = line.split(":", 1)
-                k = k.strip()
-                v = v.strip()
-                m = number_re.match(v)
-                if m:
-                    sections[current][k] = float(m.group(1))
+                continue
+
+            if current is None or ":" not in line:
+                continue
+
+            k, v = line.split(":", 1)
+            m = number_re.match(v.strip())
+            if m:
+                sections[current][k.strip()] = float(m.group(1))
     return sections
 
-# --------------------------------------------------
-# 3) collect metrics for each tag
-# --------------------------------------------------
-# metrics[tag][test][metric_name] = value
-metrics = {}
 
-for tag in TAGS:
-    tag_dir = os.path.join(LOG_ROOT, tag)
-    wads_file = os.path.join(tag_dir, "results_wads.txt")
-    livox_file = os.path.join(tag_dir, "results_livox.txt")
+def resolve_livox_path(tag):
+    # lisnownet/lior: logs/<tag>/results_livox.txt
+    p1 = os.path.join(LOG_ROOT, tag, "results_livox.txt")
+    # alior sweep layout: logs/<tag>/livox/results_livox.txt
+    p2 = os.path.join(LOG_ROOT, tag, "livox", "results_livox.txt")
+    if os.path.isfile(p1):
+        return p1
+    if os.path.isfile(p2):
+        return p2
+    return p1
 
-    tag_dict = {}
 
-    # WADS overall
-    wads_sections = read_metrics_from_file(wads_file)
-    if "WADS overall" in wads_sections:
-        tag_dict["wads"] = wads_sections["WADS overall"]
+def resolve_wads_path(tag):
+    # most runs: logs/<tag>/results_wads.txt
+    p1 = os.path.join(LOG_ROOT, tag, "results_wads.txt")
+    # optional nested layout
+    p2 = os.path.join(LOG_ROOT, tag, "wads", "results_wads.txt")
+    if os.path.isfile(p1):
+        return p1
+    if os.path.isfile(p2):
+        return p2
+    return p1
 
-    # Livox + subsets
-    livox_sections = read_metrics_from_file(livox_file)
-    # normalize names
-    if "Livox overall" in livox_sections:
-        tag_dict["livox"] = livox_sections["Livox overall"]
-
-    for name in ["HP", "HD", "LP", "LD", "LP+LD", "HD+LD", "mix_val"]:
-        if name in livox_sections:
-            tag_dict[name] = livox_sections[name]
-
-    metrics[tag] = tag_dict
 
 # --------------------------------------------------
-# 4) helper to make grouped bar chart
+# 3) collect requested metrics
 # --------------------------------------------------
-def plot_by_tag(metric_name):
-    """
-    x-axis: tags
-    each tag: 9 bars (tests)
-    """
-    tags = TAGS
-    tests = TEST_GROUPS
-    n_tags = len(tags)
-    n_tests = len(tests)
+model_metrics = {}
+for model in MODELS:
+    tag = model["tag"]
+    livox_file = resolve_livox_path(tag)
+    wads_file = resolve_wads_path(tag)
 
-    x = np.arange(n_tags)  # tag positions
-    width = 0.075  # bar width – small because 9 bars per group
+    merged = {}
+    merged.update(read_metrics_from_file(livox_file))
+    merged.update(read_metrics_from_file(wads_file))
+    model_metrics[model["name"]] = merged
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    for j, test in enumerate(tests):
-        values = []
-        for tag in tags:
-            v = metrics.get(tag, {}).get(test, {}).get(metric_name, 0.0)
-            values.append(v)
-        ax.bar(x + (j - n_tests/2)*width + width/2, values, width, label=test)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(tags, rotation=15)
-    ax.set_ylabel(metric_name.capitalize())
-    ax.set_title(f"{metric_name.capitalize()} by tag (9 tests per tag)")
-    ax.legend(fontsize=7, ncol=3)
-    ax.set_ylim(0, 1.05)  # because these are ratios
-    fig.tight_layout()
-
-
-def plot_by_test(metric_name):
-    """
-    x-axis: tests
-    each test: 5 bars (tags)
-    """
-    tests = TEST_GROUPS
-    tags = TAGS
-    n_tests = len(tests)
-    n_tags = len(tags)
-
-    x = np.arange(n_tests)
-    width = 0.12
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    for i, tag in enumerate(tags):
-        values = []
-        for test in tests:
-            v = metrics.get(tag, {}).get(test, {}).get(metric_name, 0.0)
-            values.append(v)
-        ax.bar(x + (i - n_tags/2)*width + width/2, values, width, label=tag)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(tests, rotation=20)
-    ax.set_ylabel(metric_name.capitalize())
-    ax.set_title(f"{metric_name.capitalize()} by test (5 tags per test)")
-    ax.legend(fontsize=7)
-    ax.set_ylim(0, 1.05)
-    fig.tight_layout()
 
 # --------------------------------------------------
-# 5) actually make the 4× plots (acc, prec, recall, f1)
+# 4) plot F1 comparison (one figure)
 # --------------------------------------------------
-for m in ["accuracy", "precision", "recall", "f1"]:
-    plot_by_tag(m)
-    plot_by_test(m)
+x = np.arange(len(TEST_GROUPS))
+width = 0.18
 
-plt.show()
+fig, ax = plt.subplots(figsize=(10, 5))
+
+for i, model in enumerate(MODELS):
+    name = model["name"]
+    values = []
+    for _label, section in TEST_GROUPS:
+        v = model_metrics.get(name, {}).get(section, {}).get("f1", 0.0)
+        values.append(v)
+    ax.bar(x + (i - (len(MODELS) - 1) / 2) * width, values, width=width, label=name)
+
+ax.set_xticks(x)
+ax.set_xticklabels([label for label, _ in TEST_GROUPS])
+ax.set_ylabel("F1")
+ax.set_ylim(0, 1.0)
+ax.set_title("HP/H/P/Mix/WADS F1 Comparison")
+ax.grid(axis="y", alpha=0.25)
+ax.legend(fontsize=8)
+fig.tight_layout()
+fig.savefig(OUT_PNG, dpi=200)
+
+
+# --------------------------------------------------
+# 5) save CSV table
+# --------------------------------------------------
+with open(OUT_CSV, "w") as f:
+    f.write("group," + ",".join([m["name"] for m in MODELS]) + "\n")
+    for label, section in TEST_GROUPS:
+        vals = []
+        for model in MODELS:
+            name = model["name"]
+            v = model_metrics.get(name, {}).get(section, {}).get("f1", 0.0)
+            vals.append(f"{v:.6f}")
+        f.write(label + "," + ",".join(vals) + "\n")
+
+print(f"saved_plot: {OUT_PNG}")
+print(f"saved_csv: {OUT_CSV}")

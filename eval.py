@@ -3,6 +3,8 @@ import argparse
 import time
 from multiprocessing import Pool, cpu_count
 import os
+import sys
+import subprocess
 from glob import glob
 from functools import partial
 import numpy as np
@@ -17,6 +19,23 @@ from tools.datasets.cadc import CADC
 from tools.models import LiSnowNet
 from tools.utils import image2points
 from tools.datasets.livoxMid70 import LivoxMid70
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+DATA_DIR = os.path.join(ROOT_DIR, 'data')
+
+
+def read_subset_file_list(file_list_path):
+    selected = []
+    with open(file_list_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            item = line.strip()
+            if not item or item.startswith('#'):
+                continue
+            if not os.path.isabs(item):
+                item = os.path.join(ROOT_DIR, item)
+            selected.append(os.path.abspath(item))
+    return selected
 
 
 def save_results(frame, log_dir, zmin=-2, zmax=6, axlim=30, save_bev=False, reverse=False):
@@ -102,11 +121,11 @@ def fid_to_path(fid, dataset_kind):
     if dataset_kind == 'wads':
         # fid = "<seq>/<frame>.bin"
         seq, name = os.path.split(fid)
-        return os.path.join('./data/wads', seq, 'velodyne', name)
+        return os.path.join(DATA_DIR, 'wads', seq, 'velodyne', name)
     elif dataset_kind == 'cadc':
-        return os.path.join('./data/cadcd', fid)  # not used in current eval path
+        return os.path.join(DATA_DIR, 'cadcd', fid)  # not used in current eval path
     elif dataset_kind == 'livox':
-        return os.path.join('./data/livox', fid)  # e.g. "HP/cloud17.pcd"
+        return os.path.join(DATA_DIR, 'livox', fid)  # e.g. "HP/cloud17.pcd"
     else:
         raise ValueError(dataset_kind)
 
@@ -130,35 +149,89 @@ if __name__ == '__main__':
     parser.add_argument('--threshold', type=float, default=1.2e-2)
     parser.add_argument('--z_ground', type=float, default=-1.8)
     parser.add_argument('--snow_id', type=int, default=110)
-    parser.add_argument('--log_dir', type=str, default='./logs')
+    parser.add_argument('--log_dir', type=str, default='../logs',
+                        help='Output root for predictions/results (default: workspace logs)')
+    parser.add_argument('--ckpt_log_dir', type=str, default='./logs',
+                        help='Checkpoint root (default: lisnownet/logs)')
     parser.add_argument('--tag', type=str, default='')
+    parser.add_argument('--all_tags', action='store_true',
+                        help='Evaluate all trained tags under ckpt_log_dir')
+    parser.add_argument('--tag_pattern', type=str, default='*_a*_b*_lr*_dec*_e*',
+                        help='Glob pattern for selecting tags when --all_tags is set')
     parser.add_argument('--dataset', type=str, default='livox', choices=['cadc', 'wads', 'livox'])
     parser.add_argument('--save_bev', action='store_true',
                     help='Also save BEV PNGs. Off by default.')
+    parser.add_argument('--num_workers', type=int, default=None,
+                    help='DataLoader workers. Defaults to half of CPU cores.')
+    parser.add_argument('--pred_only', action='store_true',
+                    help='Write prediction sidecars only; skip filtered point-cloud outputs.')
+    parser.add_argument('--file_list', type=str, default='',
+                    help='Optional text file of raw input files, absolute or relative to repo root.')
     config = parser.parse_args()
 
+    def out_tag_name(tag):
+        return tag if tag.startswith('lisnownet_') else f'lisnownet_{tag}'
+
+    if config.all_tags:
+        cand_dirs = sorted(glob(os.path.join(config.ckpt_log_dir, config.tag_pattern)))
+        tags = []
+        for d in cand_dirs:
+            if os.path.isdir(d) and glob(os.path.join(d, '*.pth')):
+                tags.append(os.path.basename(d))
+
+        if not tags:
+            raise FileNotFoundError(f"No trained tags found under {config.ckpt_log_dir} matching {config.tag_pattern}")
+
+        print(f"[eval] Found {len(tags)} tags. Running sequential evaluation...")
+        for idx, tag in enumerate(tags, 1):
+            cmd = [
+                sys.executable,
+                __file__,
+                '--batch_size', str(config.batch_size),
+                '--threshold', str(config.threshold),
+                '--z_ground', str(config.z_ground),
+                '--snow_id', str(config.snow_id),
+                '--log_dir', config.log_dir,
+                '--ckpt_log_dir', config.ckpt_log_dir,
+                '--tag', tag,
+                '--dataset', config.dataset,
+            ]
+            if config.save_bev:
+                cmd.append('--save_bev')
+
+            print(f"\n[eval {idx}/{len(tags)}] tag={tag}")
+            subprocess.run(cmd, check=True)
+
+        print("\n[eval] All tags finished.")
+        raise SystemExit(0)
+
     config.tag = config.tag.split('/')[-1]
-    log_dir = os.path.join(config.log_dir, config.tag)
+    out_log_dir = os.path.join(config.log_dir, out_tag_name(config.tag))
 
     if config.tag:
-        checkpoints = sorted(glob(os.path.join(log_dir, '*.pth')))
+        ckpt_dir = os.path.join(config.ckpt_log_dir, config.tag)
+        checkpoints = sorted(glob(os.path.join(ckpt_dir, '*.pth')))
     else:
         # auto-pick latest run that has any .pth
         checkpoints = []
         run_dirs = sorted(
-            [d for d in glob(os.path.join(config.log_dir, '*')) if os.path.isdir(d)],
+            [d for d in glob(os.path.join(config.ckpt_log_dir, '*')) if os.path.isdir(d)],
             key=os.path.getmtime, reverse=True
         )
         for d in run_dirs:
             cks = sorted(glob(os.path.join(d, '*.pth')))
             if cks:
-                log_dir = d
+                config.tag = os.path.basename(d)
+                ckpt_dir = d
+                out_log_dir = os.path.join(config.log_dir, out_tag_name(config.tag))
                 checkpoints = cks
-                print(f"[eval] Using latest run: {log_dir}")
+                print(f"[eval] Using latest run: {ckpt_dir}")
                 break
 
     if not checkpoints:
-        raise FileNotFoundError(f"No checkpoints found under {log_dir} (or in {config.log_dir} if no tag).")
+        if config.tag:
+            raise FileNotFoundError(f"No checkpoints found under {os.path.join(config.ckpt_log_dir, config.tag)}")
+        raise FileNotFoundError(f"No checkpoints found under {config.ckpt_log_dir}")
 
     plt.rcParams.update({
         'text.usetex': True,
@@ -170,11 +243,17 @@ if __name__ == '__main__':
     device = torch.device('cuda')
 
     if config.dataset == 'cadc':
-        dataset = CADC(data_dir='./data/cadcd', training=False, skip=1)
+        dataset = CADC(data_dir=os.path.join(DATA_DIR, 'cadcd'), training=False, skip=1)
     elif config.dataset == 'wads':
-        dataset = WADS(data_dir='./data/wads', training=False, skip=1)
+        dataset = WADS(data_dir=os.path.join(DATA_DIR, 'wads'), training=False, skip=1)
     elif config.dataset == 'livox':
-        dataset = LivoxMid70(data_dir='./data/livox', training=False, skip=1)
+        dataset = LivoxMid70(data_dir=os.path.join(DATA_DIR, 'livox'), training=False, skip=1)
+
+    if config.file_list:
+        dataset.fn_points = read_subset_file_list(config.file_list)
+        if not dataset.fn_points:
+            raise ValueError(f'No files found in --file_list {config.file_list}')
+        print(f"[eval] Using file_list with {len(dataset.fn_points)} files")
 
     # dataset-specific thresholds
     if config.dataset == 'cadc':
@@ -189,16 +268,16 @@ if __name__ == '__main__':
         d_thresh = 2.5
     elif config.dataset == 'livox':
         # Livox intensities and ranges differ → use your looser ones
-        base_thresh = 1e-4
+        base_thresh = 1e-20
         z_ground = config.z_ground     # keep it for now
-        i_thresh = 2.0                 # your livox edit
+        i_thresh = 1 / 255                 # your livox edit
         d_thresh = 0.1                 # your livox edit
 
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=cpu_count() // 2,
+        num_workers=cpu_count() // 2 if config.num_workers is None else config.num_workers,
         pin_memory=False,
         drop_last=False
     )
@@ -233,13 +312,31 @@ if __name__ == '__main__':
             range_img = range_img.pow(3)
 
             # predictions
-            pr_img = delta_d * delta_i.pow(3) > base_thresh
+            # pr_img = delta_d * delta_i.pow(3) > base_thresh
+            score  = delta_d * delta_i.pow(3)
+            pr_img = score > base_thresh
             # snowflakes are higher than the ground plane
             pr_img &= xyz_img[:, 2, :, :] > z_ground
             # snowflakes are very dark
-            pr_img &= range_img[:, 1, :, :] < i_thresh
+            # pr_img &= range_img[:, 1, :, :] < i_thresh
+            i_norm = range_img[:, 1, :, :].clamp(0, 1)
+            pr_img &= i_norm < i_thresh
             # points within a small distance are 100% snowflakes
             pr_img |= range_img[:, 0, :, :] < d_thresh
+
+            # --- one-time debug on first batch ---
+            if index == 0:
+                def frac(t): 
+                    t = t.detach().float()
+                    return (t.sum() / t.numel()).item()
+                print("\n[DEBUG] mask fractions (batch 0):")
+                print("  score>thr :", frac(score > base_thresh))
+                print("  z>ground  :", frac(xyz_img[:, 2] > z_ground))
+                print("  i<dark    :", frac(i_norm < i_thresh))
+                print("  near      :", frac(range_img[:, 0] < d_thresh))
+                tmp = (score > base_thresh) & (xyz_img[:, 2] > z_ground) & (i_norm < i_thresh)
+                print("  AND(all)  :", frac(tmp))
+                print("  final     :", frac(pr_img))
 
             runtime.append((time.time() - t0) / range_img.shape[0])
 
@@ -277,7 +374,7 @@ if __name__ == '__main__':
 
                     # --- write compact per-point sidecars ---
                     if config.dataset == 'wads':
-                        out_lab_dir = os.path.join(log_dir, os.path.dirname(_fid), 'pred')
+                        out_lab_dir = os.path.join(out_log_dir, os.path.dirname(_fid), 'pred')
                         os.makedirs(out_lab_dir, exist_ok=True)
                         out_lab = os.path.join(out_lab_dir, os.path.basename(raw_path).replace('.bin', '.pred.label'))
                         # preds are 0/1 -> uint8 is enough
@@ -285,10 +382,11 @@ if __name__ == '__main__':
 
                     elif config.dataset == 'livox':
                         in_path = fid_to_path(_fid, 'livox')
-                        write_livox_pred_sidecar(in_path, arr[:, 7].astype(bool), log_dir, _fid)
+                        write_livox_pred_sidecar(in_path, arr[:, 7].astype(bool), out_log_dir, _fid)
 
-                    # --- write filtered point cloud (and optional BEV) right now ---
-                    save_results((_fid, arr), log_dir, save_bev=config.save_bev)
+                    if not config.pred_only:
+                        # --- write filtered point cloud (and optional BEV) right now ---
+                        save_results((_fid, arr), out_log_dir, save_bev=config.save_bev)
 
                     print(', '.join([
                         f'[{index + 1:4d}/{len(loader):4d}] {_fid}',
@@ -335,5 +433,5 @@ if __name__ == '__main__':
     print('Saving results ... ', end='\r')
     num_proc = min(3 * cpu_count() // 4, 64)
     with Pool(num_proc) as pool:
-        pool.map(partial(save_results, log_dir=log_dir, save_bev=config.save_bev, reverse=True), frames)
+        pool.map(partial(save_results, log_dir=out_log_dir, save_bev=config.save_bev, reverse=True), frames)
     print('\nDone.')
